@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.github.wechatautohide.MainActivity
 import com.github.wechatautohide.database.AppDatabase
 import com.github.wechatautohide.database.HideContact
 import kotlinx.coroutines.CoroutineScope
@@ -27,16 +28,18 @@ class WeChatMonitorService : AccessibilityService() {
     private var isProcessing = false
     private var lastCheckTime = 0L
     private val CHECK_INTERVAL = 2000L
-
-    // 已处理过的联系人（防止重复操作）
-    // key=联系人名, value=上次处理时间
     private val processedMap = mutableMapOf<String, Long>()
-    private val PROCESS_COOLDOWN = 30000L // 30秒内不重复处理同一个人
+    private val PROCESS_COOLDOWN = 30000L
+
+    private fun log(msg: String) {
+        Log.d(TAG, msg)
+        MainActivity.addLog(msg)
+    }
 
     override fun onCreate() {
         super.onCreate()
         database = AppDatabase.getDatabase(this)
-        Log.d(TAG, "✅ 无障碍服务已启动")
+        log("✅ 服务已启动")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -48,12 +51,14 @@ class WeChatMonitorService : AccessibilityService() {
         if (now - lastCheckTime < CHECK_INTERVAL) return
 
         when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                lastCheckTime = now
+                log("窗口变化: ${event.className}")
+                serviceScope.launch { scanAndHide() }
+            }
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
                 lastCheckTime = now
-                serviceScope.launch {
-                    scanAndHide()
-                }
+                serviceScope.launch { scanAndHide() }
             }
         }
     }
@@ -63,10 +68,9 @@ class WeChatMonitorService : AccessibilityService() {
         isProcessing = true
 
         try {
-            // 获取数据库中的隐藏名单
             val contacts = database.hideContactDao().getAllContactsSync()
             if (contacts.isEmpty()) {
-                Log.d(TAG, "隐藏名单为空")
+                log("名单为空")
                 return
             }
 
@@ -75,203 +79,187 @@ class WeChatMonitorService : AccessibilityService() {
                 .map { it.name.trim() }
                 .toSet()
 
-            Log.d(TAG, "隐藏名单: $hideNames")
+            log("名单: $hideNames")
 
             val rootNode = rootInActiveWindow ?: run {
-                Log.d(TAG, "无法获取根节点")
+                log("无法获取窗口")
                 return
             }
 
-            // 打印当前界面信息（调试用）
-            val windowClass = rootNode.className?.toString() ?: ""
-            Log.d(TAG, "当前窗口: $windowClass")
-
-            // 对每个需要隐藏的联系人进行处理
             for (name in hideNames) {
                 val now = System.currentTimeMillis()
-                val lastProcess = processedMap[name] ?: 0
-                if (now - lastProcess < PROCESS_COOLDOWN) {
-                    Log.d(TAG, "跳过 $name（冷却中）")
-                    continue
-                }
+                if ((now - (processedMap[name] ?: 0)) < PROCESS_COOLDOWN) continue
 
-                val found = findContactInList(rootNode, name)
-                if (found) {
-                    Log.d(TAG, "找到联系人: $name，开始隐藏")
-                    processedMap[name] = now
-
-                    val contact = contacts.find { it.name == name }
-                    contact?.let {
-                        database.hideContactDao().incrementHideCount(it.id)
-                    }
-                }
+                val success = tryHide(rootNode, name, contacts)
+                if (success) processedMap[name] = now
             }
 
             rootNode.recycle()
 
         } catch (e: Exception) {
-            Log.e(TAG, "扫描出错: ${e.message}")
+            log("出错: ${e.message}")
         } finally {
             isProcessing = false
         }
     }
 
-    private suspend fun findContactInList(
+    private suspend fun tryHide(
         root: AccessibilityNodeInfo,
-        targetName: String
+        name: String,
+        contacts: List<HideContact>
     ): Boolean {
-        // 方法1：直接搜索文本
-        val nodes = root.findAccessibilityNodeInfosByText(targetName)
-        if (nodes.isNullOrEmpty()) {
-            Log.d(TAG, "未找到文本节点: $targetName")
-            return false
-        }
+        // 方法1：findAccessibilityNodeInfosByText
+        val nodes = root.findAccessibilityNodeInfosByText(name)
+        log("搜索'$name'找到${nodes?.size ?: 0}个节点")
 
-        Log.d(TAG, "找到 ${nodes.size} 个包含 '$targetName' 的节点")
+        if (!nodes.isNullOrEmpty()) {
+            for (node in nodes) {
+                val t = node.text?.toString()?.trim() ?: ""
+                val d = node.contentDescription?.toString()?.trim() ?: ""
+                log("  节点: text='$t' desc='$d' class=${node.className} longClick=${node.isLongClickable}")
 
-        for (node in nodes) {
-            val text = node.text?.toString()?.trim() ?: ""
-            val desc = node.contentDescription?.toString()?.trim() ?: ""
-
-            Log.d(TAG, "节点文本: '$text' 描述: '$desc' 类: ${node.className}")
-
-            // 检查是否完全匹配
-            if (text == targetName || desc == targetName) {
-                // 找到目标，向上找可长按的父节点
-                val longClickTarget = findLongClickableAncestor(node)
-                if (longClickTarget != null) {
-                    Log.d(TAG, "找到可长按节点，执行长按")
-                    val success = doLongClickAndHide(longClickTarget)
-                    longClickTarget.recycle()
-                    node.recycle()
-                    nodes.forEach { it.recycle() }
-                    return success
+                if (t == name || d == name) {
+                    val target = getLongClickTarget(node)
+                    if (target != null) {
+                        log("  执行长按")
+                        val ok = longClickAndHide(target)
+                        target.recycle()
+                        nodes.forEach { it.recycle() }
+                        if (ok) {
+                            contacts.find { it.name == name }?.let {
+                                database.hideContactDao().incrementHideCount(it.id)
+                            }
+                            log("✅ 隐藏成功: $name")
+                        }
+                        return ok
+                    } else {
+                        log("  未找到可长按父节点")
+                    }
                 }
+                node.recycle()
             }
-            node.recycle()
+            nodes.forEach { it.recycle() }
         }
 
-        nodes.forEach { it.recycle() }
+        // 方法2：遍历整个节点树
+        log("方法1失败，遍历节点树")
+        return traverseTree(root, name, contacts)
+    }
+
+    private suspend fun traverseTree(
+        node: AccessibilityNodeInfo,
+        name: String,
+        contacts: List<HideContact>
+    ): Boolean {
+        val t = node.text?.toString()?.trim() ?: ""
+        val d = node.contentDescription?.toString()?.trim() ?: ""
+
+        if (t == name || d == name) {
+            log("遍历找到: '$t'")
+            val target = getLongClickTarget(node)
+            if (target != null) {
+                val ok = longClickAndHide(target)
+                target.recycle()
+                if (ok) {
+                    contacts.find { it.name == name }?.let {
+                        database.hideContactDao().incrementHideCount(it.id)
+                    }
+                    log("✅ 遍历隐藏成功: $name")
+                }
+                return ok
+            }
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = traverseTree(child, name, contacts)
+            child.recycle()
+            if (found) return true
+        }
         return false
     }
 
-    private fun findLongClickableAncestor(
-        node: AccessibilityNodeInfo
-    ): AccessibilityNodeInfo? {
-        // 先检查节点本身
+    private fun getLongClickTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.isLongClickable) return node
-
-        // 向上查找最多10层
-        var parent = node.parent
+        var p = node.parent
         var depth = 0
-        while (parent != null && depth < 10) {
-            if (parent.isLongClickable) {
-                return parent
-            }
-            val grandParent = parent.parent
-            if (depth > 0) parent.recycle()
-            parent = grandParent
+        while (p != null && depth < 10) {
+            if (p.isLongClickable) return p
+            val gp = p.parent
+            if (depth > 0) p.recycle()
+            p = gp
             depth++
         }
         return null
     }
 
-    private suspend fun doLongClickAndHide(node: AccessibilityNodeInfo): Boolean {
-        return try {
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-
-            if (rect.isEmpty) {
-                Log.d(TAG, "节点边界为空")
-                return false
-            }
-
-            val x = rect.centerX().toFloat()
-            val y = rect.centerY().toFloat()
-
-            Log.d(TAG, "长按坐标: ($x, $y)")
-
-            // 执行长按手势
-            val path = Path().apply { moveTo(x, y) }
-            val stroke = GestureDescription.StrokeDescription(path, 0, 800)
-            val gesture = GestureDescription.Builder().addStroke(stroke).build()
-            dispatchGesture(gesture, null, null)
-
-            // 等待菜单弹出
-            delay(1200)
-
-            // 点击隐藏选项
-            val result = clickHideMenuItem()
-            Log.d(TAG, "点击隐藏菜单: $result")
-            result
-
-        } catch (e: Exception) {
-            Log.e(TAG, "长按出错: ${e.message}")
-            false
+    private suspend fun longClickAndHide(node: AccessibilityNodeInfo): Boolean {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (rect.isEmpty) {
+            log("边界为空")
+            return false
         }
+
+        val x = rect.centerX().toFloat()
+        val y = rect.centerY().toFloat()
+        log("长按: ($x, $y)")
+
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 800)
+        dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+
+        delay(1200)
+
+        return clickMenu()
     }
 
-    private fun clickHideMenuItem(): Boolean {
+    private fun clickMenu(): Boolean {
         val root = rootInActiveWindow ?: return false
+        val options = listOf("不显示该聊天", "不显示", "Delete", "隐藏对话")
 
-        // 微信"不显示该聊天"的可能文本
-        val menuTexts = listOf(
-            "不显示该聊天",
-            "不显示",
-            "Delete",
-            "隐藏对话"
-        )
-
-        for (menuText in menuTexts) {
-            val nodes = root.findAccessibilityNodeInfosByText(menuText)
+        for (text in options) {
+            val nodes = root.findAccessibilityNodeInfosByText(text)
             if (nodes.isNullOrEmpty()) continue
-
-            Log.d(TAG, "找到菜单项: $menuText")
+            log("找到菜单: $text")
 
             for (node in nodes) {
-                // 尝试点击节点本身
                 if (node.isClickable) {
                     node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     node.recycle()
                     root.recycle()
                     return true
                 }
-
-                // 尝试点击父节点
-                var parent = node.parent
-                var depth = 0
-                while (parent != null && depth < 5) {
-                    if (parent.isClickable) {
-                        parent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        parent.recycle()
+                var p = node.parent
+                var d = 0
+                while (p != null && d < 5) {
+                    if (p.isClickable) {
+                        p.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        p.recycle()
                         node.recycle()
                         root.recycle()
                         return true
                     }
-                    val gp = parent.parent
-                    parent.recycle()
-                    parent = gp
-                    depth++
+                    val gp = p.parent
+                    p.recycle()
+                    p = gp
+                    d++
                 }
                 node.recycle()
             }
         }
 
         root.recycle()
-
-        // 没找到菜单，按返回键关闭
-        Log.d(TAG, "未找到隐藏菜单，按返回键")
         performGlobalAction(GLOBAL_ACTION_BACK)
+        log("未找到菜单，已关闭")
         return false
     }
 
-    override fun onInterrupt() {
-        Log.d(TAG, "服务中断")
-    }
+    override fun onInterrupt() {}
 
     override fun onDestroy() {
         super.onDestroy()
         serviceScope.cancel()
-        Log.d(TAG, "服务销毁")
+        log("服务已停止")
     }
 }
