@@ -86,3 +86,135 @@ class WeChatMonitorService : AccessibilityService() {
         return className.contains("ListView") || 
                className.contains("RecyclerView")
     }
+    
+    private fun scanChatList() {
+        if (isProcessing) {
+            Log.d(TAG, "正在处理中，跳过")
+            return
+        }
+        
+        isProcessing = true
+        
+        serviceScope.launch {
+            try {
+                val rootNode = rootInActiveWindow
+                if (rootNode == null) {
+                    Log.w(TAG, "无法获取根节点")
+                    isProcessing = false
+                    return@launch
+                }
+                
+                Log.d(TAG, "开始扫描聊天列表")
+                
+                val chatItems = findAllChatItems(rootNode)
+                Log.d(TAG, "找到 ${chatItems.size} 个聊天项")
+                
+                val hideContacts = database.hideContactDao().getAllContactsSync()
+                val hideNames = hideContacts.filter { it.enabled }.map { it.name }.toSet()
+                
+                Log.d(TAG, "需要隐藏的联系人: $hideNames")
+                
+                for (chatItem in chatItems) {
+                    val contactName = extractContactNameFromNode(chatItem)
+                    
+                    if (contactName.isNotEmpty() && hideNames.contains(contactName)) {
+                        Log.d(TAG, "发现目标联系人: $contactName")
+                        
+                        if (!processedContacts.contains(contactName)) {
+                            hideChatItem(chatItem, contactName)
+                            processedContacts.add(contactName)
+                            
+                            val contact = hideContacts.find { it.name == contactName }
+                            contact?.let {
+                                database.hideContactDao().incrementHideCount(it.id)
+                            }
+                            
+                            delay(500)
+                        }
+                    }
+                    
+                    chatItem.recycle()
+                }
+                
+                rootNode.recycle()
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "扫描聊天列表失败", e)
+            } finally {
+                isProcessing = false
+            }
+        }
+    }
+    
+    private fun findAllChatItems(rootNode: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+        val chatItems = mutableListOf<AccessibilityNodeInfo>()
+        
+        val listViews = WeChatNodeParser.findNodesByClassName(
+            rootNode, 
+            listOf("ListView", "RecyclerView")
+        )
+        
+        for (listView in listViews) {
+            for (i in 0 until listView.childCount) {
+                val child = listView.getChild(i)
+                if (child != null && isValidChatItem(child)) {
+                    chatItems.add(child)
+                }
+            }
+        }
+        
+        if (chatItems.isEmpty()) {
+            chatItems.addAll(findClickableContainers(rootNode))
+        }
+        
+        return chatItems
+    }
+    
+    private fun isValidChatItem(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isClickable && !node.isLongClickable) {
+            return false
+        }
+        
+        val hasText = hasTextContent(node)
+        if (!hasText) {
+            return false
+        }
+        
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        val height = rect.height()
+        
+        return height in 100..600
+    }
+    
+    private fun hasTextContent(node: AccessibilityNodeInfo): Boolean {
+        if (!node.text.isNullOrEmpty()) {
+            return true
+        }
+        
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (hasTextContent(child)) {
+                child.recycle()
+                return true
+            }
+            child.recycle()
+        }
+        
+        return false
+    }
+    
+    private fun findClickableContainers(node: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+        val containers = mutableListOf<AccessibilityNodeInfo>()
+        
+        if (isValidChatItem(node)) {
+            containers.add(node)
+        }
+        
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            containers.addAll(findClickableContainers(child))
+        }
+        
+        return containers
+    }
