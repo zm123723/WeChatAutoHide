@@ -6,9 +6,9 @@ import android.widget.EditText
 import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.viewModels
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.github.wechatautohide.adapter.ContactAdapter
@@ -21,76 +21,79 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton
 
 class MainActivity : AppCompatActivity() {
 
-    private val viewModel: ContactViewModel by viewModels()
-    private lateinit var adapter: ContactAdapter
-    private lateinit var recyclerView: RecyclerView
-    private lateinit var fabAddContact: FloatingActionButton
-    private lateinit var cardAccessibility: MaterialCardView
-    private lateinit var tvAccessibilityStatus: TextView
-    private lateinit var tvEmptyView: TextView
-
-    private var isInitialized = false
+    private var viewModel: ContactViewModel? = null
+    private var adapter: ContactAdapter? = null
+    private var recyclerView: RecyclerView? = null
+    private var fabAddContact: FloatingActionButton? = null
+    private var cardAccessibility: MaterialCardView? = null
+    private var tvAccessibilityStatus: TextView? = null
+    private var tvEmptyView: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        initViews()
-        setupRecyclerView()
-        setupObservers()
-        setupListeners()
-        isInitialized = true
-        checkPermissions()
-    }
 
-    private fun initViews() {
         recyclerView = findViewById(R.id.recycler_view)
         fabAddContact = findViewById(R.id.fab_add_contact)
         cardAccessibility = findViewById(R.id.card_accessibility)
         tvAccessibilityStatus = findViewById(R.id.tv_accessibility_status)
         tvEmptyView = findViewById(R.id.tv_empty_view)
-    }
 
-    private fun setupRecyclerView() {
+        viewModel = ViewModelProvider(this)[ContactViewModel::class.java]
+
         adapter = ContactAdapter { contact ->
-            showDeleteConfirmDialog(contact)
+            AlertDialog.Builder(this)
+                .setTitle("删除确认")
+                .setMessage("确定要删除 ${contact.name} 吗？")
+                .setPositiveButton("删除") { _, _ ->
+                    viewModel?.deleteContact(contact)
+                    Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("取消", null)
+                .show()
         }
-        recyclerView.layoutManager = LinearLayoutManager(this)
-        recyclerView.adapter = adapter
-    }
 
-    private fun setupObservers() {
-        viewModel.allContacts.observe(this) { contacts ->
-            adapter.submitList(contacts)
-            tvEmptyView.visibility = if (contacts.isEmpty()) {
+        recyclerView?.layoutManager = LinearLayoutManager(this)
+        recyclerView?.adapter = adapter
+
+        viewModel?.allContacts?.observe(this) { contacts ->
+            adapter?.submitList(contacts)
+            tvEmptyView?.visibility = if (contacts.isEmpty()) {
                 android.view.View.VISIBLE
             } else {
                 android.view.View.GONE
             }
         }
-    }
 
-    private fun setupListeners() {
-        fabAddContact.setOnClickListener {
+        fabAddContact?.setOnClickListener {
             showAddContactDialog()
         }
-        cardAccessibility.setOnClickListener {
+
+        cardAccessibility?.setOnClickListener {
             PermissionHelper.openAccessibilitySettings(this)
         }
+
+        updateStatus()
     }
 
-    private fun checkPermissions() {
-        if (!isInitialized) return
-        val enabled = PermissionHelper.isAccessibilityServiceEnabled(
-            this,
-            "com.github.wechatautohide.service.WeChatMonitorService"
-        )
-        if (enabled) {
-            tvAccessibilityStatus.text = "✅ 已启用"
-            tvAccessibilityStatus.setTextColor(getColor(android.R.color.holo_green_dark))
-        } else {
-            tvAccessibilityStatus.text = "❌ 未启用"
-            tvAccessibilityStatus.setTextColor(getColor(android.R.color.holo_red_dark))
+    private fun updateStatus() {
+        val enabled = try {
+            PermissionHelper.isAccessibilityServiceEnabled(
+                this,
+                "com.github.wechatautohide.service.WeChatMonitorService"
+            )
+        } catch (e: Exception) {
+            false
         }
+
+        tvAccessibilityStatus?.text = if (enabled) "✅ 已启用" else "❌ 未启用"
+        tvAccessibilityStatus?.setTextColor(
+            if (enabled) {
+                getColor(android.R.color.holo_green_dark)
+            } else {
+                getColor(android.R.color.holo_red_dark)
+            }
+        )
     }
 
     private fun showAddContactDialog() {
@@ -116,27 +119,16 @@ class MainActivity : AppCompatActivity() {
                     R.id.rb_life -> "生活"
                     else -> "其他"
                 }
-                val contact = HideContact(
-                    name = name,
-                    groupType = groupType,
-                    autoHide = autoHideCheckbox.isChecked,
-                    muteNotification = muteCheckbox.isChecked,
-                    autoRead = autoReadCheckbox.isChecked
+                viewModel?.addContact(
+                    HideContact(
+                        name = name,
+                        groupType = groupType,
+                        autoHide = autoHideCheckbox.isChecked,
+                        muteNotification = muteCheckbox.isChecked,
+                        autoRead = autoReadCheckbox.isChecked
+                    )
                 )
-                viewModel.addContact(contact)
                 Toast.makeText(this, "已添加: $name", Toast.LENGTH_SHORT).show()
-            }
-            .setNegativeButton("取消", null)
-            .show()
-    }
-
-    private fun showDeleteConfirmDialog(contact: HideContact) {
-        AlertDialog.Builder(this)
-            .setTitle("删除确认")
-            .setMessage("确定要删除 ${contact.name} 吗？")
-            .setPositiveButton("删除") { _, _ ->
-                viewModel.deleteContact(contact)
-                Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("取消", null)
             .show()
@@ -144,6 +136,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        checkPermissions()
+        updateStatus()
     }
 }
