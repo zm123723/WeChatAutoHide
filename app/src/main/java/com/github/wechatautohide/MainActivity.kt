@@ -1,8 +1,12 @@
 package com.github.wechatautohide
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -20,6 +24,18 @@ class MainActivity : AppCompatActivity() {
 
     private var viewModel: ContactViewModel? = null
     private var adapter: ContactAdapter? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    companion object {
+        // 静态日志列表，供 Service 写入
+        val logMessages = mutableListOf<String>()
+        fun addLog(msg: String) {
+            val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                .format(java.util.Date())
+            logMessages.add("[$time] $msg")
+            if (logMessages.size > 50) logMessages.removeAt(0)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,6 +46,8 @@ class MainActivity : AppCompatActivity() {
         val cardAccessibility = findViewById<LinearLayout>(R.id.card_accessibility)
         val tvAccessibilityStatus = findViewById<TextView>(R.id.tv_accessibility_status)
         val tvEmptyView = findViewById<TextView>(R.id.tv_empty_view)
+        val tvLog = findViewById<TextView>(R.id.tv_log)
+        val btnClearLog = findViewById<Button>(R.id.btn_clear_log)
 
         viewModel = ViewModelProvider(this)[ContactViewModel::class.java]
 
@@ -57,7 +75,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 点击加号：完全不用布局文件，直接用代码创建输入框
         fabAddContact?.setOnClickListener {
             val editText = EditText(this)
             editText.hint = "输入联系人名称（与微信完全一致）"
@@ -69,12 +86,11 @@ class MainActivity : AppCompatActivity() {
                 .setPositiveButton("添加") { _, _ ->
                     val name = editText.text.toString().trim()
                     if (name.isEmpty()) {
-                        Toast.makeText(this, "请输入联系人名称", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "请输入名称", Toast.LENGTH_SHORT).show()
                     } else {
-                        viewModel?.addContact(
-                            HideContact(name = name)
-                        )
+                        viewModel?.addContact(HideContact(name = name))
                         Toast.makeText(this, "✅ 已添加: $name", Toast.LENGTH_SHORT).show()
+                        addLog("添加联系人: $name")
                     }
                 }
                 .setNegativeButton("取消", null)
@@ -85,37 +101,40 @@ class MainActivity : AppCompatActivity() {
             PermissionHelper.openAccessibilitySettings(this)
         }
 
-        // 更新无障碍服务状态
-        val enabled = try {
-            PermissionHelper.isAccessibilityServiceEnabled(
-                this,
-                "com.github.wechatautohide.service.WeChatMonitorService"
-            )
-        } catch (e: Exception) {
-            false
+        btnClearLog?.setOnClickListener {
+            logMessages.clear()
+            tvLog?.text = "日志已清除"
         }
-        tvAccessibilityStatus?.text = if (enabled) "✅ 已启用" else "❌ 未启用（点击设置）"
-        tvAccessibilityStatus?.setTextColor(
-            if (enabled) getColor(android.R.color.holo_green_dark)
-            else getColor(android.R.color.holo_red_dark)
-        )
+
+        // 每秒刷新日志和状态
+        handler.post(object : Runnable {
+            override fun run() {
+                // 更新无障碍状态
+                val enabled = try {
+                    PermissionHelper.isAccessibilityServiceEnabled(
+                        this@MainActivity,
+                        "com.github.wechatautohide.service.WeChatMonitorService"
+                    )
+                } catch (e: Exception) { false }
+
+                tvAccessibilityStatus?.text = if (enabled) "✅ 已启用" else "❌ 未启用（点击设置）"
+                tvAccessibilityStatus?.setTextColor(
+                    if (enabled) getColor(android.R.color.holo_green_dark)
+                    else getColor(android.R.color.holo_red_dark)
+                )
+
+                // 更新日志
+                if (logMessages.isNotEmpty()) {
+                    tvLog?.text = logMessages.joinToString("\n")
+                }
+
+                handler.postDelayed(this, 1000)
+            }
+        })
     }
 
-    override fun onResume() {
-        super.onResume()
-        val tvAccessibilityStatus = findViewById<TextView>(R.id.tv_accessibility_status)
-        val enabled = try {
-            PermissionHelper.isAccessibilityServiceEnabled(
-                this,
-                "com.github.wechatautohide.service.WeChatMonitorService"
-            )
-        } catch (e: Exception) {
-            false
-        }
-        tvAccessibilityStatus?.text = if (enabled) "✅ 已启用" else "❌ 未启用（点击设置）"
-        tvAccessibilityStatus?.setTextColor(
-            if (enabled) getColor(android.R.color.holo_green_dark)
-            else getColor(android.R.color.holo_red_dark)
-        )
+    override fun onDestroy() {
+        super.onDestroy()
+        handler.removeCallbacksAndMessages(null)
     }
 }
