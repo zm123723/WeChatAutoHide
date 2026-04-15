@@ -76,53 +76,54 @@ class WeChatMonitorService : AccessibilityService() {
 
             val hideNames = contacts.map { it.name.trim() }.toSet()
 
-            val rootNode = rootInActiveWindow ?: run {
-                log("根节点为空")
-                return
-            }
+            val rootNode = rootInActiveWindow ?: return
 
             try {
-                val pkg = rootNode.packageName?.toString() ?: ""
-                if (pkg != WECHAT_PACKAGE) {
-                    return
+                if (rootNode.packageName?.toString() != WECHAT_PACKAGE) return
+
+                // ===== 调试：打印完整节点树 =====
+                val dump = StringBuilder()
+                dumpNodeTree(rootNode, dump, 0)
+                val dumpStr = dump.toString()
+
+                // 分段打印（避免日志截断）
+                val lines = dumpStr.lines()
+                log("节点树共 ${lines.size} 行：")
+                lines.chunked(10).forEachIndexed { i, chunk ->
+                    log("== 第${i+1}段 ==\n${chunk.joinToString("\n")}")
                 }
 
-                // 收集所有文本节点（不依赖ViewId）
-                val textNodes = mutableListOf<NodeInfo>()
-                collectTextNodes(rootNode, textNodes, 0)
+                // ===== 用所有可能方式查找文本 =====
+                val allTexts = mutableListOf<Pair<String, AccessibilityNodeInfo>>()
+                collectAllPossibleTexts(rootNode, allTexts, 0)
 
-                log("扫描到 ${textNodes.size} 个文本节点")
+                log("所有可读文本 (${allTexts.size} 个):")
+                allTexts.forEach { (text, _) -> log("  '$text'") }
 
-                // 打印前20个节点内容用于调试
-                textNodes.take(20).forEach { ni ->
-                    log("  [${ni.depth}] '${ni.text}' cls=${ni.className?.substringAfterLast('.')} lc=${ni.isLongClickable}")
-                }
-
-                // 查找目标联系人
-                for (ni in textNodes) {
-                    if (hideNames.contains(ni.text)) {
+                // 匹配联系人
+                for ((text, node) in allTexts) {
+                    if (hideNames.contains(text)) {
                         val now = System.currentTimeMillis()
-                        if ((now - (processedMap[ni.text] ?: 0L)) < PROCESS_COOLDOWN) {
-                            log("冷却中: ${ni.text}")
+                        if ((now - (processedMap[text] ?: 0L)) < PROCESS_COOLDOWN) {
+                            log("冷却中: $text")
                             continue
                         }
+                        log("🎯 匹配: '$text'")
+                        processedMap[text] = now
 
-                        log("🎯 匹配到: '${ni.text}'，执行隐藏")
-                        processedMap[ni.text] = now
-
-                        val success = performHide(ni.node)
-                        if (success) {
-                            contacts.find { it.name.trim() == ni.text }?.let { c ->
+                        val ok = performHide(node)
+                        if (ok) {
+                            contacts.find { it.name.trim() == text }?.let { c ->
                                 withContext(Dispatchers.IO) {
                                     database.hideContactDao().incrementHideCount(c.id)
                                 }
                             }
-                            log("✅ 已隐藏: ${ni.text}")
+                            log("✅ 隐藏成功: $text")
                         } else {
-                            log("❌ 隐藏失败: ${ni.text}")
-                            processedMap.remove(ni.text)
+                            processedMap.remove(text)
+                            log("❌ 隐藏失败: $text")
                         }
-                        break // 每次只处理一个
+                        break
                     }
                 }
 
@@ -137,81 +138,103 @@ class WeChatMonitorService : AccessibilityService() {
         }
     }
 
-    // ========== 节点收集（不依赖ViewId）==========
+    // ========== 节点树打印（调试用）==========
 
-    data class NodeInfo(
-        val text: String,
-        val className: String?,
-        val isLongClickable: Boolean,
-        val depth: Int,
-        val node: AccessibilityNodeInfo
-    )
-
-    private fun collectTextNodes(
+    private fun dumpNodeTree(
         node: AccessibilityNodeInfo,
-        result: MutableList<NodeInfo>,
+        sb: StringBuilder,
+        depth: Int
+    ) {
+        if (depth > 8) return
+
+        val indent = "  ".repeat(depth)
+        val cls = node.className?.toString()?.substringAfterLast('.') ?: "?"
+        val text = node.text?.toString() ?: ""
+        val desc = node.contentDescription?.toString() ?: ""
+        val viewId = node.viewIdResourceName ?: ""
+        val lc = node.isLongClickable
+        val rect = Rect().also { node.getBoundsInScreen(it) }
+
+        sb.appendLine("${indent}[${cls}] t='${text}' d='${desc}' id='${viewId}' lc=${lc} ${rect}")
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            dumpNodeTree(child, sb, depth + 1)
+            child.recycle()
+        }
+    }
+
+    // ========== 收集所有可能的文本（多种方式）==========
+
+    private fun collectAllPossibleTexts(
+        node: AccessibilityNodeInfo,
+        result: MutableList<Pair<String, AccessibilityNodeInfo>>,
         depth: Int
     ) {
         if (depth > 12) return
 
-        val text = (node.text?.toString() ?: "").trim()
-        val desc = (node.contentDescription?.toString() ?: "").trim()
-        val content = when {
-            text.isNotEmpty() -> text
-            desc.isNotEmpty() -> desc
-            else -> ""
+        // 方式1: text
+        val text = node.text?.toString()?.trim()
+        if (!text.isNullOrEmpty()) {
+            result.add(Pair(text, node))
         }
 
-        if (content.isNotEmpty()) {
-            result.add(
-                NodeInfo(
-                    text = content,
-                    className = node.className?.toString(),
-                    isLongClickable = node.isLongClickable,
-                    depth = depth,
-                    node = node
-                )
-            )
+        // 方式2: contentDescription
+        val desc = node.contentDescription?.toString()?.trim()
+        if (!desc.isNullOrEmpty() && desc != text) {
+            result.add(Pair(desc, node))
+        }
+
+        // 方式3: hintText (API 26+)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val hint = node.hintText?.toString()?.trim()
+            if (!hint.isNullOrEmpty()) {
+                result.add(Pair(hint, node))
+            }
+        }
+
+        // 方式4: tooltipText (API 28+)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            val tooltip = node.tooltipText?.toString()?.trim()
+            if (!tooltip.isNullOrEmpty()) {
+                result.add(Pair(tooltip, node))
+            }
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            collectTextNodes(child, result, depth + 1)
+            collectAllPossibleTexts(child, result, depth + 1)
         }
     }
 
-    // ========== 执行隐藏操作 ==========
+    // ========== 执行隐藏 ==========
 
     private suspend fun performHide(targetNode: AccessibilityNodeInfo): Boolean {
-        // 第1步：找到可长按的祖先节点
         val longClickTarget = findLongClickable(targetNode)
-        if (longClickTarget == null) {
-            log("未找到可长按节点，尝试坐标长按")
+
+        if (longClickTarget != null) {
+            val rect = Rect()
+            longClickTarget.getBoundsInScreen(rect)
+            log("找到长按节点: ${longClickTarget.className} $rect")
+
+            val ok = longClickTarget.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+            log("ACTION_LONG_CLICK: $ok")
+
+            if (ok) {
+                delay(1200)
+                return clickMenu()
+            }
+
+            if (!rect.isEmpty) {
+                return gestureAndHide(rect.centerX().toFloat(), rect.centerY().toFloat())
+            }
+        } else {
             val rect = Rect()
             targetNode.getBoundsInScreen(rect)
-            if (rect.isEmpty) {
-                log("节点边界为空")
-                return false
+            if (!rect.isEmpty) {
+                log("无长按节点，直接手势: $rect")
+                return gestureAndHide(rect.centerX().toFloat(), rect.centerY().toFloat())
             }
-            return gestureAndHide(rect.centerX().toFloat(), rect.centerY().toFloat())
-        }
-
-        val rect = Rect()
-        longClickTarget.getBoundsInScreen(rect)
-        log("长按节点: ${longClickTarget.className} bounds=$rect")
-
-        // 第2步：优先用 ACTION_LONG_CLICK
-        val actionOk = longClickTarget.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
-        log("ACTION_LONG_CLICK 结果: $actionOk")
-
-        if (actionOk) {
-            delay(1200)
-            return clickMenu()
-        }
-
-        // 第3步：降级用手势长按
-        if (!rect.isEmpty) {
-            return gestureAndHide(rect.centerX().toFloat(), rect.centerY().toFloat())
         }
 
         return false
@@ -221,8 +244,7 @@ class WeChatMonitorService : AccessibilityService() {
         log("手势长按: ($x, $y)")
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0L, 900L)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        dispatchGesture(gesture, null, null)
+        dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
         delay(1300)
         return clickMenu()
     }
@@ -246,53 +268,35 @@ class WeChatMonitorService : AccessibilityService() {
     private fun clickMenu(): Boolean {
         val root = rootInActiveWindow ?: return false
 
-        // 打印弹出菜单的所有文本
-        val menuTexts = mutableListOf<String>()
-        collectMenuTexts(root, menuTexts, 0)
-        log("菜单内容: $menuTexts")
+        try {
+            // 打印菜单所有文本
+            val menuDump = StringBuilder()
+            dumpNodeTree(root, menuDump, 0)
+            log("菜单节点树:\n$menuDump")
 
-        val targets = listOf(
-            "不显示该聊天",
-            "不显示",
-            "隐藏对话",
-            "Delete",
-            "Hide"
-        )
+            val targets = listOf(
+                "不显示该聊天", "不显示", "隐藏对话", "Delete", "Hide"
+            )
 
-        for (target in targets) {
-            val nodes = root.findAccessibilityNodeInfosByText(target)
-            if (nodes.isNullOrEmpty()) continue
-
-            log("点击菜单项: $target")
-            for (node in nodes) {
-                if (clickNodeOrAncestor(node)) {
+            for (target in targets) {
+                val nodes = root.findAccessibilityNodeInfosByText(target)
+                if (nodes.isNullOrEmpty()) continue
+                log("找到菜单: '$target'")
+                for (node in nodes) {
+                    if (clickNodeOrAncestor(node)) {
+                        node.recycle()
+                        return true
+                    }
                     node.recycle()
-                    root.recycle()
-                    return true
                 }
-                node.recycle()
             }
+        } finally {
+            root.recycle()
         }
 
-        root.recycle()
         performGlobalAction(GLOBAL_ACTION_BACK)
-        log("未找到菜单项，已关闭")
+        log("未找到菜单，已关闭弹窗")
         return false
-    }
-
-    private fun collectMenuTexts(
-        node: AccessibilityNodeInfo,
-        result: MutableList<String>,
-        depth: Int
-    ) {
-        if (depth > 6) return
-        val t = node.text?.toString()?.trim()
-        if (!t.isNullOrEmpty()) result.add(t)
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            collectMenuTexts(child, result, depth + 1)
-            child.recycle()
-        }
     }
 
     private fun clickNodeOrAncestor(node: AccessibilityNodeInfo): Boolean {
