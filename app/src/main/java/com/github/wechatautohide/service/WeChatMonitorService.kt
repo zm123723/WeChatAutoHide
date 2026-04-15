@@ -27,24 +27,9 @@ class WeChatMonitorService : AccessibilityService() {
 
     private var isProcessing = false
     private var lastCheckTime = 0L
-    private val CHECK_INTERVAL = 2000L
+    private val CHECK_INTERVAL = 1500L
     private val processedMap = mutableMapOf<String, Long>()
     private val PROCESS_COOLDOWN = 30000L
-
-    // 微信消息列表联系人名称的ViewId（不同版本可能不同）
-    private val WECHAT_CONTACT_NAME_IDS = listOf(
-        "com.tencent.mm:id/b4z",
-        "com.tencent.mm:id/b51",
-        "com.tencent.mm:id/nk_",
-        "com.tencent.mm:id/contact_name",
-        "com.tencent.mm:id/nickname",
-        "com.tencent.mm:id/name",
-        "com.tencent.mm:id/b4x",
-        "com.tencent.mm:id/b4y",
-        "com.tencent.mm:id/b50",
-        "com.tencent.mm:id/b52",
-        "com.tencent.mm:id/b53"
-    )
 
     private fun log(msg: String) {
         Log.d(TAG, msg)
@@ -57,79 +42,99 @@ class WeChatMonitorService : AccessibilityService() {
         log("✅ 服务已启动")
     }
 
-override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-    event ?: return
-    
-    // 打印当前包名，帮助调试
-    val pkg = event.packageName?.toString() ?: ""
-    if (pkg == WECHAT_PACKAGE) {
-        log("📱 微信事件: ${event.eventType}")
-    }
-    
-    if (pkg != WECHAT_PACKAGE) return
-        if (isProcessing) return
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        event ?: return
+
+        val pkg = event.packageName?.toString() ?: ""
+
+        // 只处理微信的事件
+        if (pkg != WECHAT_PACKAGE) return
 
         val now = System.currentTimeMillis()
         if (now - lastCheckTime < CHECK_INTERVAL) return
+        if (isProcessing) return
 
         when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
                 lastCheckTime = now
-                serviceScope.launch { scanAndHide() }
+                // 直接在事件线程触发扫描
+                serviceScope.launch {
+                    scanWeChat()
+                }
             }
         }
     }
 
-    private suspend fun scanAndHide() {
+    private suspend fun scanWeChat() {
         if (isProcessing) return
         isProcessing = true
 
         try {
             val contacts = database.hideContactDao().getAllContactsSync()
                 .filter { it.enabled }
-            if (contacts.isEmpty()) return
+            if (contacts.isEmpty()) {
+                isProcessing = false
+                return
+            }
 
             val hideNames = contacts.map { it.name.trim() }.toSet()
 
-            val rootNode = rootInActiveWindow ?: return
+            // 直接获取当前窗口（必须在微信前台时）
+            val rootNode = rootInActiveWindow
+            if (rootNode == null) {
+                log("窗口为空")
+                isProcessing = false
+                return
+            }
 
-            // 第一步：先扫描所有节点，打印ViewId找规律
-            dumpAllNodes(rootNode, hideNames)
+            // 确认是微信界面
+            val pkg = rootNode.packageName?.toString() ?: ""
+            if (pkg != WECHAT_PACKAGE) {
+                log("当前不是微信界面: $pkg")
+                rootNode.recycle()
+                isProcessing = false
+                return
+            }
 
-            // 第二步：用ViewId查找
-            var found = false
-            for (id in WECHAT_CONTACT_NAME_IDS) {
-                val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
-                if (!nodes.isNullOrEmpty()) {
-                    log("ViewId '$id' 找到 ${nodes.size} 个节点")
-                    for (node in nodes) {
-                        val text = node.text?.toString()?.trim() ?: ""
-                        val desc = node.contentDescription?.toString()?.trim() ?: ""
-                        log("  ViewId节点: text='$text' desc='$desc'")
+            log("扫描微信界面，名单: $hideNames")
 
-                        for (name in hideNames) {
-                            if (text == name || desc == name) {
-                                log("✅ ViewId方式找到: $name")
-                                val target = getLongClickTarget(node)
-                                if (target != null) {
-                                    val ok = longClickAndHide(target)
-                                    if (ok) {
-                                        processedMap[name] = System.currentTimeMillis()
-                                        contacts.find { it.name == name }?.let {
-                                            database.hideContactDao().incrementHideCount(it.id)
-                                        }
-                                        log("✅ 隐藏成功: $name")
-                                        found = true
-                                    }
-                                    target.recycle()
-                                }
-                                break
-                            }
-                        }
-                        node.recycle()
+            // 打印所有有ViewId的节点
+            val allNodes = mutableListOf<Triple<String, String, AccessibilityNodeInfo>>()
+            collectAllNodes(rootNode, allNodes, 0)
+
+            log("共找到 ${allNodes.size} 个有ViewId的节点")
+
+            // 查找匹配的联系人
+            for ((viewId, text, node) in allNodes) {
+                val trimText = text.trim()
+                if (hideNames.contains(trimText)) {
+                    log("🎯 找到目标! ViewId='$viewId' text='$trimText'")
+
+                    val now = System.currentTimeMillis()
+                    if ((now - (processedMap[trimText] ?: 0)) < PROCESS_COOLDOWN) {
+                        log("冷却中，跳过")
+                        continue
                     }
+
+                    val target = getLongClickTarget(node)
+                    if (target != null) {
+                        processedMap[trimText] = now
+                        val ok = longClickAndHide(target)
+                        target.recycle()
+                        if (ok) {
+                            contacts.find { it.name == trimText }?.let {
+                                database.hideContactDao().incrementHideCount(it.id)
+                            }
+                            log("✅ 隐藏成功: $trimText")
+                        }
+                    }
+                } else if (trimText.isNotEmpty()) {
+                    // 打印所有非空文本节点供调试
+                    log("节点: ViewId='$viewId' text='$trimText'")
                 }
+                node.recycle()
             }
 
             rootNode.recycle()
@@ -141,35 +146,25 @@ override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         }
     }
 
-    // 扫描并打印所有节点的ViewId和文本（帮助找规律）
-    private fun dumpAllNodes(
+    private fun collectAllNodes(
         node: AccessibilityNodeInfo,
-        hideNames: Set<String>,
-        depth: Int = 0
+        result: MutableList<Triple<String, String, AccessibilityNodeInfo>>,
+        depth: Int
     ) {
-        if (depth > 8) return
+        if (depth > 10) return
 
-        val text = node.text?.toString()?.trim() ?: ""
-        val desc = node.contentDescription?.toString()?.trim() ?: ""
         val viewId = node.viewIdResourceName ?: ""
-        val className = node.className?.toString()?.substringAfterLast(".") ?: ""
+        val text = node.text?.toString() ?: ""
+        val desc = node.contentDescription?.toString() ?: ""
+        val content = if (text.isNotEmpty()) text else desc
 
-        // 只打印有ViewId的节点
         if (viewId.isNotEmpty()) {
-            val isTarget = hideNames.any { 
-                text.contains(it) || desc.contains(it) 
-            }
-            if (isTarget) {
-                log("🎯 ViewId='$viewId' text='$text' desc='$desc' class=$className")
-            } else if (text.isNotEmpty() || desc.isNotEmpty()) {
-                log("📋 ViewId='$viewId' text='$text' class=$className")
-            }
+            result.add(Triple(viewId, content, node))
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            dumpAllNodes(child, hideNames, depth + 1)
-            child.recycle()
+            collectAllNodes(child, result, depth + 1)
         }
     }
 
@@ -198,7 +193,10 @@ override fun onAccessibilityEvent(event: AccessibilityEvent?) {
 
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, 800)
-        dispatchGesture(GestureDescription.Builder().addStroke(stroke).build(), null, null)
+        dispatchGesture(
+            GestureDescription.Builder().addStroke(stroke).build(),
+            null, null
+        )
 
         delay(1200)
         return clickMenu()
@@ -207,7 +205,13 @@ override fun onAccessibilityEvent(event: AccessibilityEvent?) {
     private fun clickMenu(): Boolean {
         val root = rootInActiveWindow ?: return false
 
-        val options = listOf("不显示该聊天", "不显示", "Delete", "隐藏对话")
+        val options = listOf(
+            "不显示该聊天",
+            "不显示",
+            "Delete",
+            "隐藏对话"
+        )
+
         for (text in options) {
             val nodes = root.findAccessibilityNodeInfosByText(text)
             if (nodes.isNullOrEmpty()) continue
