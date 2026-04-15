@@ -4,7 +4,7 @@
     <application
         android:allowBackup="false"
         android:label="微信助手"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@style/Theme.WeChatAutoHide">
 
         <activity
             android:name=".MainActivity"
