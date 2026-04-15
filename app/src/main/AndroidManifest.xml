@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/android/apk/res/android"
-    package="com.github.wechatautohide">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
         android:allowBackup="false"
-        android:icon="@android:drawable/sym_def_app_icon"
         android:label="微信助手"
         android:theme="@android:style/Theme.Material.Light">
-        
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
