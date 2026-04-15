@@ -1,11 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/root_layout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#FFFFFF">
+    android:background="#F5F5F5">
 
     <TextView
         android:layout_width="match_parent"
@@ -17,36 +16,40 @@
         android:textStyle="bold"
         android:padding="16dp" />
 
-    <com.google.android.material.card.MaterialCardView
+    <LinearLayout
         android:id="@+id/card_accessibility"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_margin="16dp">
+        android:layout_margin="16dp"
+        android:background="#FFFFFF"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:elevation="4dp">
 
-        <LinearLayout
-            android:layout_width="match_parent"
+        <TextView
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp">
+            android:text="无障碍服务"
+            android:textSize="16sp"
+            android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="无障碍服务"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+        <TextView
+            android:id="@+id/tv_accessibility_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="❌ 未启用"
+            android:textSize="14sp" />
 
-            <TextView
-                android:id="@+id/tv_accessibility_status"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="检查中..."
-                android:textSize="14sp" />
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="点击前往设置"
+            android:textColor="#1976D2"
+            android:textSize="12sp" />
 
-        </LinearLayout>
-
-    </com.google.android.material.card.MaterialCardView>
+    </LinearLayout>
 
     <TextView
         android:layout_width="match_parent"
@@ -54,17 +57,17 @@
         android:text="隐藏名单"
         android:textSize="16sp"
         android:textStyle="bold"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="8dp" />
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="8dp" />
 
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/recycler_view"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp" />
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp" />
 
     <TextView
         android:id="@+id/tv_empty_view"
@@ -77,15 +80,19 @@
         android:textSize="14sp"
         android:visibility="gone" />
 
-    <com.google.android.material.floatingactionbutton.FloatingActionButton
-        android:id="@+id/fab_add_contact"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="end"
-        android:layout_margin="16dp"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="16dp"
-        android:contentDescription="添加"
-        android:src="@android:drawable/ic_input_add" />
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fab_add_contact"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="end"
+            android:layout_margin="16dp"
+            android:contentDescription="添加"
+            android:src="@android:drawable/ic_input_add" />
+
+    </FrameLayout>
 
 </LinearLayout>
