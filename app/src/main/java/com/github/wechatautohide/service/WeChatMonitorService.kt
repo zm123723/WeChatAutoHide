@@ -57,9 +57,16 @@ class WeChatMonitorService : AccessibilityService() {
         log("✅ 服务已启动")
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        event ?: return
-        if (event.packageName != WECHAT_PACKAGE) return
+override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+    event ?: return
+    
+    // 打印当前包名，帮助调试
+    val pkg = event.packageName?.toString() ?: ""
+    if (pkg == WECHAT_PACKAGE) {
+        log("📱 微信事件: ${event.eventType}")
+    }
+    
+    if (pkg != WECHAT_PACKAGE) return
         if (isProcessing) return
 
         val now = System.currentTimeMillis()
