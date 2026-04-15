@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">微信助手</string>
+    <string name="accessibility_service_description">
+        自动监控微信消息列表，识别指定联系人的消息后自动隐藏聊天。\n\n
+        本服务需要以下权限：\n
+        • 读取屏幕内容以识别联系人\n
+        • 执行手势操作以隐藏聊天\n\n
+        所有数据仅本地存储，不会上传到服务器。\n\n
+        ⚠️ 使用前请确保已对目标联系人开启"消息免打扰"。
+    </string>
+</resources>
