@@ -1,5 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.WeChatAutoHide" parent="android:Theme.Material.Light.DarkActionBar">
-        <!-- 使用系统主题，避免自定义颜色问题 -->
-    </style>
+    <style name="Theme.WeChatAutoHide" parent="android:Theme.Material.Light.DarkActionBar" />
 </resources>
