@@ -1,0 +1,9 @@
+<resources>
+    <style name="Base.Theme.WeChatAutoHide" parent="Theme.Material3.DayNight">
+        <item name="colorPrimary">#1976D2</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorPrimaryContainer">#BBDEFB</item>
+    </style>
+
+    <style name="Theme.WeChatAutoHide" parent="Base.Theme.WeChatAutoHide" />
+</resources>
