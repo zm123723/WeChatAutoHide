@@ -4,6 +4,8 @@
 
     <application
         android:allowBackup="true"
+        android:dataExtractionRules="@android:xml/data_extraction_rules"
+        android:fullBackupContent="@android:xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -22,8 +24,8 @@
 
         <service
             android:name=".service.WeChatMonitorService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true">
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
