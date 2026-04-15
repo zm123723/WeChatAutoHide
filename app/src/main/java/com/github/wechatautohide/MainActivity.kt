@@ -29,20 +29,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvAccessibilityStatus: TextView
     private lateinit var tvEmptyView: TextView
 
+    private var isInitialized = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        try {
-            setContentView(R.layout.activity_main)
-            initViews()
-            setupRecyclerView()
-            setupObservers()
-            setupListeners()
-            checkPermissions()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            Toast.makeText(this, "错误: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        setContentView(R.layout.activity_main)
+        initViews()
+        setupRecyclerView()
+        setupObservers()
+        setupListeners()
+        isInitialized = true
+        checkPermissions()
     }
 
     private fun initViews() {
@@ -82,6 +79,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissions() {
+        if (!isInitialized) return
         val enabled = PermissionHelper.isAccessibilityServiceEnabled(
             this,
             "com.github.wechatautohide.service.WeChatMonitorService"
